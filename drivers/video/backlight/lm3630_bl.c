@@ -50,6 +50,11 @@
 /* OPPO 2013-10-24 yxq Add end */
 #define INT_DEBOUNCE_MSEC	10
 
+#ifdef CONFIG_MACH_OPPO
+/* liuyan@Onlinerd.driver, 2015/03/26  Add for fix low brightness flicker */
+#define FILTER_STR 0x50
+#endif /*CONFIG_MACH_OPPO*/
+
 static struct lm3630_chip_data *lm3630_pchip;
 
 struct lm3630_chip_data {
@@ -74,6 +79,10 @@ static int lm3630_chip_init(struct lm3630_chip_data *pchip)
 	unsigned int reg_val;
 	struct lm3630_platform_data *pdata = pchip->pdata;
 
+#ifdef CONFIG_MACH_OPPO
+/* liuyan@Onlinerd.driver, 2015/03/26  Add for low brightness filcker */
+	ret = regmap_update_bits(pchip->regmap, FILTER_STR, 0x03, 0x03);
+#endif /*CONFIG_MACH_OPPO*/
 	/*pwm control */
 	reg_val = ((pdata->pwm_active & 0x01) << 2) | (pdata->pwm_ctrl & 0x03);
 	ret = regmap_update_bits(pchip->regmap, REG_CONFIG, 0x07, reg_val);
@@ -201,6 +210,50 @@ static int lm3630_intr_config(struct lm3630_chip_data *pchip)
 	int ret;
 	struct lm3630_chip_data *pchip = lm3630_pchip;
 	pr_debug("%s: bl=%d\n", __func__,bl_level);
+
+
+#ifdef CONFIG_BACKLIGHT_EXT_CONTROL
+	// if display is switched off
+	if (bl_level == 0) 
+	{
+		// write status to external var for further usage
+		backlight_on = false;
+
+		// Add external function calls here...
+
+#ifdef CONFIG_DYNAMIC_FSYNC
+		// if dynamic fsync is defined call external suspend function
+		dyn_fsync_suspend();
+#endif
+
+#ifdef CONFIG_CPU_FREQ_GOV_ZZMOOVE
+		// if zzmoove governor is defined call external suspend function
+		zzmoove_suspend();
+#endif
+
+	}
+
+	// if display is switched on
+	if (bl_level != 0 && pre_brightness == 0) 
+	{
+		// write status to external var for further usage
+		backlight_on = true;
+
+		// Add external function calls here...
+
+#ifdef CONFIG_DYNAMIC_FSYNC
+		// if dynamic fsync is defined call external resume function
+		dyn_fsync_resume();
+#endif
+
+#ifdef CONFIG_CPU_FREQ_GOV_ZZMOOVE
+		// if zzmoove governor is defined call external resume function
+		zzmoove_resume();
+#endif
+
+	}
+#endif
+
 #ifdef CONFIG_MACH_OPPO
 /* Xiaori.Yuan@Mobile Phone Software Dept.Driver, 2014/04/28  Add for add log for 14001 black screen */
 		if(pre_brightness == 0)
@@ -547,7 +600,7 @@ static int lm3630_resume(struct device *dev)
 
 	pr_debug("%s: backlight resume.\n", __func__);
     rc = regmap_write(lm3630_pchip->regmap, REG_BRT_A, 0);
-	regmap_update_bits(lm3630_pchip->regmap, REG_CONFIG, 0x40, 0x00);
+	regmap_update_bits(lm3630_pchip->regmap, REG_CONFIG, 0x04, 0x00);
 	rc  = regmap_update_bits(lm3630_pchip->regmap, REG_CTRL, 0x80, 0x00);
 	if (rc  < 0)
 	{

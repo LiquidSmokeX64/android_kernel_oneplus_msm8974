@@ -36,6 +36,21 @@
 #include <linux/of_gpio.h>
 #include <linux/qpnp/pin.h>
 
+
+#ifdef CONFIG_CHARGE_LEVEL
+#include "linux/charge_level.h"
+int ac_level = AC_CHARGE_LEVEL_DEFAULT;    // Set AC default charge level
+int usb_level  = USB_CHARGE_LEVEL_DEFAULT; // Set USB default charge level
+int charge_info_level_req = 0;	// requested charge current
+int charge_info_level_cur = 0;	// current charge current
+int charge_level = 0;			// 0 = stock charge logic, not 0 = current to set
+char charge_info_text[30] = "No charger";
+#endif
+
+#ifdef CONFIG_FORCE_FAST_CHARGE
+#include <linux/fastchg.h>
+#endif
+
 /* Interrupt offsets */
 #define INT_RT_STS(base)			(base + 0x10)
 #define INT_SET_TYPE(base)			(base + 0x11)
@@ -933,7 +948,14 @@ qpnp_chg_idcmax_set(struct qpnp_chg_chip *chip, int mA)
 			chip->dc_chgpth_base + CHGR_I_MAX_REG, 1);
 	}
 
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	if (force_fast_charge >= 1)
+		dc = fast_charge_level / QPNP_CHG_I_MAXSTEP_MA;
+	else
+		dc = mA / QPNP_CHG_I_MAXSTEP_MA;
+#else
 	dc = mA / QPNP_CHG_I_MAXSTEP_MA;
+#endif
 
 	pr_debug("current=%d setting 0x%x\n", mA, dc);
 	rc = qpnp_chg_write(chip, &dc,
@@ -985,6 +1007,17 @@ qpnp_chg_iusb_trim_set(struct qpnp_chg_chip *chip, int trim)
 }
 
 #define IOVP_USB_WALL_TRSH_MA   150
+
+	if (qpnp_ext_charger && qpnp_ext_charger->chg_iusbmax_set)
+#ifdef CONFIG_CHARGE_LEVEL
+	{
+		charge_info_level_req = mA;
+#endif /* CONFIG_CHARGE_LEVEL */	
+		return qpnp_ext_charger->chg_iusbmax_set(mA);
+#ifdef CONFIG_CHARGE_LEVEL
+	}
+#endif /* CONFIG_CHARGE_LEVEL */	
+
 static int
 qpnp_chg_iusbmax_set(struct qpnp_chg_chip *chip, int mA)
 {
@@ -1009,8 +1042,20 @@ qpnp_chg_iusbmax_set(struct qpnp_chg_chip *chip, int mA)
 	}
 
 	/* Impose input current limit */
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	if (force_fast_charge >= 1)
+		mA = fast_charge_level;
+		if (mA > FAST_CHARGE_900)
+			mA = FAST_CHARGE_900;
+	else {
+		if (chip->maxinput_usb_ma)
+			mA = (chip->maxinput_usb_ma) <=
+				mA ? chip->maxinput_usb_ma : mA;
+	}
+#else
 	if (chip->maxinput_usb_ma)
 		mA = (chip->maxinput_usb_ma) <= mA ? chip->maxinput_usb_ma : mA;
+#endif
 
 	usb_reg = mA / QPNP_CHG_I_MAXSTEP_MA;
 
@@ -4173,8 +4218,24 @@ qpnp_chg_reduce_power_stage(struct qpnp_chg_chip *chip)
 	bool vchg_loop = get_prop_vchg_loop(chip);
 	bool ichg_loop = qpnp_chg_is_ichg_loop_active(chip);
 	bool usb_present = qpnp_chg_is_usb_chg_plugged_in(chip);
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	bool usb_ma_above_wall;
+#else
 	bool usb_ma_above_wall =
 		(qpnp_chg_usb_iusbmax_get(chip) > USB_WALL_THRESHOLD_MA);
+#endif
+
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	if (force_fast_charge >= 1) {
+		if (fast_charge_level <= FAST_CHARGE_900)
+			usb_ma_above_wall = false;
+		else
+			usb_ma_above_wall = true;
+	} else {
+		usb_ma_above_wall =
+			(qpnp_chg_usb_iusbmax_get(chip) > USB_WALL_THRESHOLD_MA);
+	}
+#endif
 
 	if (fast_chg
 		&& usb_present
@@ -5113,8 +5174,96 @@ qpnp_charger_read_dt_props(struct qpnp_chg_chip *chip)
 		if (chip->bpd_detection < 0) {
 			pr_err("failed to determine bpd schema %d\n", rc);
 			return rc;
+
 		}
 	}
+
+#ifdef CONFIG_CHARGE_LEVEL
+	if (qpnp_charger_type_get(chip) == POWER_SUPPLY_TYPE_USB_DCP)
+	{
+		charge_level = ac_level;
+		sprintf(charge_info_text, "AC charger");
+	}
+	else if (qpnp_charger_type_get(chip) == POWER_SUPPLY_TYPE_USB)
+	{
+		charge_level = usb_level;
+		sprintf(charge_info_text, "USB charger");
+	}
+	else
+	{
+		charge_level = 0; // enable stock charging logic
+		sprintf(charge_info_text, "Unknown charger %d", qpnp_charger_type_get(chip));
+	}
+#endif	
+
+#ifdef CONFIG_CHARGE_LEVEL
+		if (charge_level != 0)
+		{
+			qpnp_chg_iusbmax_set(chip, charge_level);
+		}
+		else
+		{
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		}
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		if (charge_level != 0)
+		{
+			qpnp_chg_iusbmax_set(chip, charge_level);
+		}
+		else
+		{
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		}
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		if (charge_level != 0)
+		{
+			qpnp_chg_iusbmax_set(chip, charge_level);
+		}
+		else
+		{
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		}
+#endif /* CONFIG_CHARGE_LEVEL */		
+		
+#ifdef CONFIG_CHARGE_LEVEL
+		if (charge_level != 0)
+		{
+			qpnp_chg_ibatmax_set(chip, charge_level);
+		}
+		else
+		{
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		}
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		if (charge_level != 0)
+		{
+			qpnp_chg_iusbmax_set(chip, charge_level);
+		}
+		else
+		{
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		}
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+	charge_info_level_cur = abs(get_prop_current_now(chip));
+#endif
 
 	if (!chip->vbatdet_max_err_mv)
 		chip->vbatdet_max_err_mv = VBATDET_MAX_ERR_MV;
@@ -5136,6 +5285,7 @@ qpnp_charger_read_dt_props(struct qpnp_chg_chip *chip)
 		if (rc)
 			return rc;
 	}
+
 
 	/* Get the use-external-rsense property */
 	chip->use_external_rsense = of_property_read_bool(
@@ -5159,6 +5309,13 @@ qpnp_charger_read_dt_props(struct qpnp_chg_chip *chip)
 		if (rc)
 			return rc;
 	}
+
+#ifdef CONFIG_CHARGE_LEVEL
+	charge_level = 0;
+	charge_info_level_req = 0;
+	charge_info_level_cur = 0;
+	sprintf(charge_info_text, "No charger");
+#endif
 
 	/* Get the charging-disabled property */
 	chip->charging_disabled = of_property_read_bool(chip->spmi->dev.of_node,
@@ -5268,6 +5425,8 @@ qpnp_charger_probe(struct spmi_device *spmi)
 	if (ext_ovp_isns_present)
 		chip->ext_ovp_ic_gpio_enabled = 0;
 
+   
+
 	/*
 	 * Check if bat_if is set in DT and make sure VADC is present
 	 * Also try loading the battery data profile if bat_if exists
@@ -5277,6 +5436,7 @@ qpnp_charger_probe(struct spmi_device *spmi)
 			pr_err("qpnp_chg: spmi resource absent\n");
 			rc = -ENXIO;
 			goto fail_chg_enable;
+		
 		}
 
 		resource = spmi_get_resource(spmi, spmi_resource,
@@ -5602,6 +5762,99 @@ fail_chg_enable:
 	regulator_unregister(chip->boost_vreg.rdev);
 	return rc;
 }
+
+#ifdef CONFIG_CHARGE_LEVEL
+	if (qpnp_charger_type_get(chip) == POWER_SUPPLY_TYPE_USB_DCP)
+	{
+		charge_info_level = ac_level;
+		sprintf(charge_info_text, "AC charger");
+	}
+	else if (qpnp_charger_type_get(chip) == POWER_SUPPLY_TYPE_USB)
+	{
+		charge_info_level = usb_level;
+		sprintf(charge_info_text, "USB charger");
+	}
+	else
+	{
+		chip->usb_psy->get_property(chip->usb_psy,
+			  POWER_SUPPLY_PROP_CURRENT_MAX, &ret);
+		charge_info_level = ret.intval / 1000;
+		sprintf(charge_info_text, "Unknown charger %d", qpnp_charger_type_get(chip));
+	}
+#endif	
+
+#ifdef CONFIG_CHARGE_LEVEL
+		qpnp_chg_iusbmax_set(chip, charge_info_level);
+#else
+		chip->usb_psy->get_property(chip->usb_psy,
+			  POWER_SUPPLY_PROP_CURRENT_MAX, &ret);
+		qpnp_chg_iusbmax_set(chip, ret.intval / 1000);
+#endif /* CONFIG_CHARGE_LEVEL */
+		
+#ifdef CONFIG_CHARGE_LEVEL
+		qpnp_chg_iusbmax_set(chip, charge_info_level);
+#else
+		chip->usb_psy->get_property(chip->usb_psy,
+			  POWER_SUPPLY_PROP_CURRENT_MAX, &ret);
+		qpnp_chg_iusbmax_set(chip, ret.intval / 1000);
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		qpnp_chg_iusbmax_set(chip, charge_info_level);
+#else
+		chip->usb_psy->get_property(chip->usb_psy,
+			  POWER_SUPPLY_PROP_CURRENT_MAX, &ret);
+		if(ret.intval / 1000 == 500) {
+			qpnp_chg_iusbmax_set(chip, ret.intval / 1000);
+		} else {
+		/* jingchun.wang@Onlinerd.Driver, 2013/12/14  Add for reset current. */
+		/* jingchun.wang@Onlinerd.Driver, 2013/12/27  Add for auto adapt current by software. */
+			if(chip->aicl_current == 0) {
+				soft_aicl(chip);
+			} else {
+				if (chip->aicl_current == 1500) {
+#ifdef CONFIG_MACH_FIND7OP
+					qpnp_chg_iusbmax_set(chip, 1200);
+#else
+					qpnp_chg_iusbmax_set(chip, 1500);
+#endif
+				} else {
+					qpnp_chg_iusbmax_set(chip, chip->aicl_current);
+				}
+			}
+				
+		}
+#endif /* CONFIG_CHARGE_LEVEL */
+		
+#ifdef CONFIG_CHARGE_LEVEL
+		qpnp_chg_ibatmax_set(chip, charge_info_level);
+#else		
+		if(qpnp_charger_type_get(chip) == POWER_SUPPLY_TYPE_USB_DCP){
+			if(ret.intval / 1000 == 500)
+				qpnp_chg_ibatmax_set(chip, 500);
+			else
+				qpnp_chg_ibatmax_set(chip, chip->max_bat_chg_current);
+		}else {
+			qpnp_chg_ibatmax_set(chip, 500);
+		}
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+		qpnp_chg_iusbmax_set(chip, charge_info_level);
+#else		
+		chip->usb_psy->get_property(chip->usb_psy,
+			  POWER_SUPPLY_PROP_CURRENT_MAX, &ret);
+		qpnp_chg_iusbmax_set(chip, ret.intval / 1000);
+#endif /* CONFIG_CHARGE_LEVEL */
+
+#ifdef CONFIG_CHARGE_LEVEL
+	charge_info_level = abs(get_prop_current_now(chip));
+#endif
+
+#ifdef CONFIG_CHARGE_LEVEL
+	charge_info_level = 0;
+	sprintf(charge_info_text, "No charger");
+#endif
 
 static int __devexit
 qpnp_charger_remove(struct spmi_device *spmi)

@@ -2699,6 +2699,7 @@ char *d_path(const struct path *path, char *buf, int buflen)
 	br_read_unlock(&vfsmount_lock);
 	if (error < 0)
 		res = ERR_PTR(error);
+    write_sequnlock(&rename_lock);
 	path_put(&root);
 	return res;
 }
